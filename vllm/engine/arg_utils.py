@@ -20,6 +20,7 @@ class EngineArgs:
     seed: int = 0
     max_model_len: Optional[int] = None
     worker_use_ray: bool = False
+    worker_use_local: bool = False
     pipeline_parallel_size: int = 1
     tensor_parallel_size: int = 1
     max_parallel_loading_workers: Optional[int] = None
@@ -124,7 +125,12 @@ class EngineArgs:
         parser.add_argument('--worker-use-ray',
                             action='store_true',
                             help='use Ray for distributed serving, will be '
-                            'automatically set when using more than 1 GPU')
+                            'automatically set when using more than 1 GPU '
+                            'and worker_user_local is False')
+        parser.add_argument('--worker-use-local',
+                            action='store_true',
+                            help='use host-local processes for distributed '
+                            'serving')
         parser.add_argument('--pipeline-parallel-size',
                             '-pp',
                             type=int,
@@ -229,6 +235,7 @@ class EngineArgs:
         parallel_config = ParallelConfig(self.pipeline_parallel_size,
                                          self.tensor_parallel_size,
                                          self.worker_use_ray,
+                                         self.worker_use_local,
                                          self.max_parallel_loading_workers)
         scheduler_config = SchedulerConfig(self.max_num_batched_tokens,
                                            self.max_num_seqs,

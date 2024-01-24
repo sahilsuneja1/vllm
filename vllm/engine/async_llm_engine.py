@@ -8,6 +8,7 @@ from vllm.config import ModelConfig
 from vllm.engine.arg_utils import AsyncEngineArgs
 from vllm.engine.llm_engine import LLMEngine
 from vllm.engine.ray_utils import initialize_cluster, ray
+from vllm.engine.local_worker_utils import LocalWorkerVllm
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
@@ -224,9 +225,18 @@ class _AsyncLLMEngine(LLMEngine):
         coros.append(asyncio.get_event_loop().run_in_executor(
             None, partial(driver_executor, *driver_args, **driver_kwargs)))
 
-        # Run the ray workers asynchronously.
-        for worker in self.workers:
-            coros.append(worker.execute_method.remote(method, *args, **kwargs))
+        # Run the workers asynchronously.
+        if self.parallel_config.worker_use_ray:
+            for worker in self.workers:
+                coros.append(worker.execute_method.remote(
+                    method, *args, **kwargs))
+        elif self.parallel_config.worker_use_local:
+            for worker_id, worker in self.workers.items():
+                worker.task_queue.put(
+                    ('execute_method', method, (args, kwargs)))
+            for worker_id, worker in self.workers.items():
+                coros.append(asyncio.get_event_loop().run_in_executor(
+                    None, worker.result_queue.get))
 
         all_outputs = await asyncio.gather(*coros)
         return all_outputs
@@ -262,6 +272,7 @@ class AsyncLLMEngine:
     def __init__(self,
                  worker_use_ray: bool,
                  engine_use_ray: bool,
+                 worker_use_local: bool,
                  *args,
                  log_requests: bool = True,
                  max_log_len: Optional[int] = None,
@@ -269,6 +280,7 @@ class AsyncLLMEngine:
                  **kwargs) -> None:
         self.worker_use_ray = worker_use_ray
         self.engine_use_ray = engine_use_ray
+        self.worker_use_local = worker_use_local
         self.log_requests = log_requests
         self.max_log_len = max_log_len
         self.engine = self._init_engine(*args, **kwargs)
@@ -543,6 +555,7 @@ class AsyncLLMEngine:
         # Create the async LLM engine.
         engine = cls(parallel_config.worker_use_ray,
                      engine_args.engine_use_ray,
+                     parallel_config.worker_use_local,
                      *engine_configs,
                      placement_group,
                      log_requests=not engine_args.disable_log_requests,

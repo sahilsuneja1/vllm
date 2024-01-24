@@ -2,6 +2,7 @@ import copy
 from collections import defaultdict
 import os
 import time
+from torch.cuda import device_count
 from typing import (TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Tuple,
                     Union)
 
@@ -11,6 +12,7 @@ from vllm.core.scheduler import Scheduler, SchedulerOutputs
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics import record_metrics
 from vllm.engine.ray_utils import RayWorkerVllm, initialize_cluster, ray
+from vllm.engine.local_worker_utils import LocalWorkerVllm
 from vllm.logger import init_logger
 from vllm.outputs import RequestOutput
 from vllm.sampling_params import SamplingParams
@@ -107,6 +109,8 @@ class LLMEngine:
             if ray_usage != "1":
                 os.environ["RAY_USAGE_STATS_ENABLED"] = "0"
             self._init_workers_ray(placement_group)
+        elif self.parallel_config.worker_use_local:
+            self._init_workers_local()
         else:
             self._init_workers()
 
@@ -129,7 +133,8 @@ class LLMEngine:
         from vllm.worker.worker import Worker
 
         assert self.parallel_config.world_size == 1, (
-            "Ray is required if parallel_config.world_size > 1.")
+            "For parallel_config.world_size > 1, set either worker_use_ray"
+            "or worker_use_local to True")
 
         self.workers: List[Worker] = []
         distributed_init_method = f"tcp://{get_ip()}:{get_open_port()}"
@@ -142,6 +147,56 @@ class LLMEngine:
             distributed_init_method=distributed_init_method,
             is_driver_worker=True,
         )
+        self._run_workers("init_model")
+        self._run_workers("load_model")
+
+    def _init_workers_local(self):
+        # Set CUDA_VISIBLE_DEVICES for the driver.
+        node_gpus = [i for i in range(
+            self.parallel_config.tensor_parallel_size)]
+        set_cuda_visible_devices(node_gpus)
+
+        assert self.parallel_config.tensor_parallel_size <= device_count(), (
+            "please set tensor_parallel_size to less than max local gpu count")
+
+        self.workers = {
+            worker_id: LocalWorkerVllm() for worker_id in range(
+                1, self.parallel_config.tensor_parallel_size)}
+        for worker_id, worker in self.workers.items():
+            worker.start()
+
+        for worker_id, worker in self.workers.items():
+            worker.task_queue.put(('set_cuda_visible_devices', node_gpus))
+
+        distributed_init_method = f"tcp://{get_ip()}:{get_open_port()}"
+
+        # Lazy import the Worker to avoid importing torch.cuda/xformers
+        # before CUDA_VISIBLE_DEVICES is set in the Worker
+        from vllm.worker.worker import Worker
+
+        model_config = copy.deepcopy(self.model_config)
+        parallel_config = copy.deepcopy(self.parallel_config)
+        scheduler_config = copy.deepcopy(self.scheduler_config)
+        for worker_id, worker in self.workers.items():
+            worker.task_queue.put(('init_worker',
+                                   model_config,
+                                   parallel_config,
+                                   scheduler_config,
+                                   worker_id,
+                                   worker_id,
+                                   distributed_init_method
+                                   ))
+
+        self.driver_worker = Worker(
+            self.model_config,
+            self.parallel_config,
+            self.scheduler_config,
+            local_rank=0,
+            rank=0,
+            distributed_init_method=distributed_init_method,
+            is_driver_worker=True,
+        )
+
         self._run_workers("init_model")
         self._run_workers("load_model")
 
@@ -277,7 +332,7 @@ class LLMEngine:
             You may limit the usage of GPU memory
             by adjusting the `gpu_memory_utilization` parameters.
         """
-        # Get the maximum number of blocks that can be allocated on GPU and CPU.
+        # Get the maximum number of blocks that can be allocated on GPU and CPU
         num_blocks = self._run_workers(
             "profile_num_available_blocks",
             block_size=self.cache_config.block_size,
@@ -560,7 +615,7 @@ class LLMEngine:
         all_finished_seqs.sort(key=lambda x: x[0].get_beam_search_score(
             length_penalty=length_penalty,
             eos_token_id=self.tokenizer.eos_token_id),
-                               reverse=True)
+            reverse=True)
         for seq, parent, is_new in all_finished_seqs[:beam_width]:
             if is_new:
                 # A newly generated child sequence finishes and has a high
@@ -588,7 +643,7 @@ class LLMEngine:
         running_child_seqs.sort(key=lambda x: x[0].get_beam_search_score(
             length_penalty=length_penalty,
             eos_token_id=self.tokenizer.eos_token_id),
-                                reverse=True)
+            reverse=True)
 
         # Check if we can stop the beam search.
         if len(running_child_seqs) == 0:
@@ -826,7 +881,7 @@ class LLMEngine:
              read_offset=seq.read_offset,
              skip_special_tokens=prms.skip_special_tokens,
              spaces_between_special_tokens=prms.spaces_between_special_tokens,
-         )
+        )
         if seq.tokens is None:
             seq.tokens = new_tokens
         else:
@@ -881,23 +936,35 @@ class LLMEngine:
             raise NotImplementedError(
                 "max_concurrent_workers is not supported yet.")
 
-        # Start the ray workers first.
-        ray_worker_outputs = [
-            worker.execute_method.remote(method, *args, **kwargs)
-            for worker in self.workers
-        ]
+        # Start the workers first.
+        if self.parallel_config.worker_use_ray:
+            worker_outputs = [
+                worker.execute_method.remote(method, *args, **kwargs)
+                for worker in self.workers
+            ]
+
+        elif self.parallel_config.worker_use_local:
+            for worker_id, worker in self.workers.items():
+                worker.task_queue.put(
+                    ('execute_method', method, (args, kwargs)))
 
         if driver_args is None:
             driver_args = args
         if driver_kwargs is None:
             driver_kwargs = kwargs
 
-        # Start the driver worker after all the ray workers.
+        # Start the driver worker after all the other workers.
         driver_worker_output = getattr(self.driver_worker,
                                        method)(*driver_args, **driver_kwargs)
 
-        # Get the results of the ray workers.
+        # Get the results of the workers.
         if self.workers:
-            ray_worker_outputs = ray.get(ray_worker_outputs)
+            if self.parallel_config.worker_use_ray:
+                worker_outputs = ray.get(worker_outputs)
+            elif self.parallel_config.worker_use_local:
+                worker_outputs = [worker.result_queue.get()
+                                  for worker_id, worker in self.workers.items()]
+        else:
+            worker_outputs = []
 
-        return [driver_worker_output] + ray_worker_outputs
+        return [driver_worker_output] + worker_outputs

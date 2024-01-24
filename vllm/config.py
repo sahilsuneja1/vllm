@@ -324,7 +324,8 @@ class ParallelConfig:
         tensor_parallel_size: Number of tensor parallel groups.
         worker_use_ray: Whether to use Ray for model workers. Will be set to
             True if either pipeline_parallel_size or tensor_parallel_size is
-            greater than 1.
+            greater than 1 and worker_use_local is False.
+        worker_use_local: Whether to use local processes for model workers. 
     """
 
     def __init__(
@@ -332,15 +333,17 @@ class ParallelConfig:
         pipeline_parallel_size: int,
         tensor_parallel_size: int,
         worker_use_ray: bool,
+        worker_use_local: bool,
         max_parallel_loading_workers: Optional[int] = None,
     ) -> None:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
         self.worker_use_ray = worker_use_ray
+        self.worker_use_local = worker_use_local
         self.max_parallel_loading_workers = max_parallel_loading_workers
 
         self.world_size = pipeline_parallel_size * tensor_parallel_size
-        if self.world_size > 1:
+        if self.world_size > 1 and not self.worker_use_local:
             self.worker_use_ray = True
         self._verify_args()
 
