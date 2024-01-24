@@ -86,7 +86,6 @@ class LLMEngine:
             f"enforce_eager={model_config.enforce_eager}, "
             f"seed={model_config.seed})")
         # TODO(woosuk): Print more configs in debug mode.
-
         self.model_config = model_config
         self.cache_config = cache_config
         self.parallel_config = parallel_config

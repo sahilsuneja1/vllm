@@ -325,7 +325,8 @@ class ParallelConfig:
         worker_use_ray: Whether to use Ray for model workers. Will be set to
             True if either pipeline_parallel_size or tensor_parallel_size is
             greater than 1 and worker_use_local is False.
-        worker_use_local: Whether to use local processes for model workers. 
+        worker_use_local: Whether to use local processes for model workers,
+            instead of ray.
     """
 
     def __init__(

@@ -230,6 +230,7 @@ class _AsyncLLMEngine(LLMEngine):
             for worker in self.workers:
                 coros.append(worker.execute_method.remote(
                     method, *args, **kwargs))
+
         elif self.parallel_config.worker_use_local:
             for worker_id, worker in self.workers.items():
                 worker.task_queue.put(
@@ -260,6 +261,8 @@ class AsyncLLMEngine:
         engine_use_ray: Whether to make LLMEngine a Ray actor. If so, the
             async frontend will be executed in a separate process as the
             model workers.
+        worker_use_local: Whether to use local processes for model workers,
+           instead of ray in the single-node multi-GPU setup
         log_requests: Whether to log the requests.
         start_engine_loop: If True, the background task to run the engine
             will be automatically started in the generate call.

@@ -4,6 +4,9 @@ from vllm.utils import set_cuda_visible_devices
 
 
 class LocalWorkerVllm(mp.Process):
+    """Local process wrapper for vllm.worker.Worker 
+    for handling single-node multi-GPU tensor parallel setup."""
+
     def __init__(self):
         super().__init__(daemon=True)
         self.task_queue = mp.Queue()
@@ -11,6 +14,8 @@ class LocalWorkerVllm(mp.Process):
         self.worker = None
 
     def run(self):
+        # Accept tasks from the engine in task_queue
+        # and return task output in result_queue
         for items in iter(self.task_queue.get, "TERMINATE"):
             method = items[0]
             args = items[1:]
