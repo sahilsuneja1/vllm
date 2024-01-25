@@ -1,6 +1,10 @@
 import os
+import traceback
 import multiprocessing as mp
 from vllm.utils import set_cuda_visible_devices
+from vllm.logger import init_logger
+
+logger = init_logger(__name__)
 
 
 class LocalWorkerVllm(mp.Process):
@@ -16,11 +20,18 @@ class LocalWorkerVllm(mp.Process):
     def run(self):
         # Accept tasks from the engine in task_queue
         # and return task output in result_queue
-        for items in iter(self.task_queue.get, "TERMINATE"):
-            method = items[0]
-            args = items[1:]
-            executor = getattr(self, method)
-            executor(*args)
+        logger.info(
+            f"Worker {mp.current_process().name} pid {os.getpid()} ready; awaiting tasks")
+        try:
+            for items in iter(self.task_queue.get, "TERMINATE"):
+                method = items[0]
+                args = items[1:]
+                executor = getattr(self, method)
+                executor(*args)
+        except Exception as e:
+            tb = traceback.format_exc()
+            logger.error(
+                f"Exception in worker {mp.current_process().name}: {e}, {tb}")
 
     def set_cuda_visible_devices(self, device_id):
         set_cuda_visible_devices(device_id)
