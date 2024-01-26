@@ -920,7 +920,7 @@ class LLMEngine:
             seq.status = SequenceStatus.FINISHED_STOPPED
             return
 
-    def _check_worker_status(self):
+    def _check_workers_alive(self) -> bool:
         if not self.parallel_config.worker_use_local:
             logger.warning(
                 f"_check_worker_status works for worker_use_local mode only")
@@ -964,7 +964,7 @@ class LLMEngine:
             ]
 
         elif self.parallel_config.worker_use_local:
-            if not self._check_worker_status():
+            if not self._check_workers_alive():
                 logger.error("Worker died; Terminating engine")
                 exit(1)
             for worker_id, worker in self.workers.items():
