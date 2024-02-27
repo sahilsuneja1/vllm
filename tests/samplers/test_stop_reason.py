@@ -48,7 +48,7 @@ def test_stop_reason(vllm_model, example_prompts):
             stop="."))
     for output in outputs:
         output = output.outputs[0]
-        assert output.finish_reason == "stop" and output.stop_reason == "."
+        assert output.finish_reason == "stop" and output.stop_reason == STOP_STR
 
     # test EOS token
     outputs = llm.generate(
